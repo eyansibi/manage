@@ -1,132 +1,120 @@
+require('dotenv').config(); // Assure que .env est chargé
+
 const Certification = require('../models/Certifications');
 const { validateCertification } = require('../validators/CertificationsValidators');
+
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-// Configurer Cloudinary si ce n'est pas déjà fait ailleurs
+
+// ✅ Config Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-// Obtenir toutes les certifications de l'utilisateur connecté
+
+// ✅ Config Storage
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: 'certifications',
+    allowed_formats: ['jpg', 'jpeg', 'png'],
+  },
+});
+
+const upload = multer({ storage });
+
+// 📤 Middleware exporté si besoin dans routes
+exports.upload = upload;
+
+// ✅ GET - Toutes les certifications de l'utilisateur
 exports.getUserCertifications = async (req, res) => {
-  console.log('Request received for getUserCertifications, headers:', req.headers);
-  console.log('Request user:', req.user);
-
-  if (!req.user || !req.user._id) {
-    console.log('User not authenticated, req.user:', req.user, 'Headers:', req.headers);
-    return res.status(401).json({ message: 'User not authenticated' });
-  }
-
   try {
     const certifications = await Certification.find({ userId: req.user._id });
-    console.log('Found certifications for userId:', req.user._id, certifications);
-    if (!certifications.length) {
-      return res.status(200).json({ message: 'No certifications found for this user', certifications: [] });
-    }
-    res.status(200).json(certifications);
+    return res.status(200).json(certifications);
   } catch (err) {
-    console.error('Error fetching user certifications:', err.message, err.stack);
-    res.status(500).json({ message: 'Server error', error: err.message });
+    console.error('Error fetching certifications:', err.message);
+    return res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// Obtenir une certification par ID
+// ✅ GET - Certification par ID
 exports.getCertificationById = async (req, res) => {
   try {
     const certification = await Certification.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!certification) return res.status(404).json({ message: 'Certification not found or unauthorized' });
-    res.status(200).json(certification);
+    if (!certification) {
+      return res.status(404).json({ message: 'Certification not found or unauthorized' });
+    }
+    return res.status(200).json(certification);
   } catch (err) {
-    console.error('Error fetching certification by ID:', err.message);
-    res.status(500).json({ message: 'Server error', error: err.message });
+    return res.status(500).json({ message: 'Server error', error: err.message });
   }
 };
 
-// Créer une nouvelle certification avec upload d'image
+// ✅ POST - Créer une certification (image facultative)
 exports.createCertification = async (req, res) => {
-  console.log('Requête reçue pour createCertification');
-  console.log('Headers:', req.headers);
-  console.log('Body:', req.body);
-  console.log('File:', req.file);
-
-  if (!req.user || !req.user._id) {
-    return res.status(401).json({ message: 'User not authenticated' });
+  const { error } = validateCertification(req.body);
+  if (error) {
+    return res.status(400).json({ errors: error.details.map(err => err.message) });
   }
 
   try {
-    const certificationData = {
-      certifications_name: req.body.certifications_name,
-      issued_by: req.body.issued_by,
-      obtained_date: req.body.obtained_date,
-      description: req.body.description || '',
+    const newCertification = {
+      ...req.body,
       userId: req.user._id,
-      image: req.file ? 'test_image_url' : '', // Test sans Cloudinary
+      image: req.file?.path || null,
     };
 
-    const newCertification = new Certification(certificationData);
-    await newCertification.save();
-    res.status(201).json(newCertification);
+    const created = await Certification.create(newCertification);
+    return res.status(201).json(created);
   } catch (err) {
-    console.error('Error creating certification:', err.message, err.stack);
-    res.status(500).json({ message: 'Failed to create certification', error: err.message });
+    return res.status(500).json({ message: 'Failed to create certification', error: err.message });
   }
 };
-// Mettre à jour une certification avec upload d'image
+
+// ✅ PUT - Mettre à jour une certification (image facultative)
 exports.updateCertification = async (req, res) => {
   const { error } = validateCertification(req.body);
   if (error) {
-    console.log('Validation errors:', error.details);
-    return res.status(400).json({ errors: error.details.map((err) => err.message) });
+    return res.status(400).json({ errors: error.details.map(err => err.message) });
   }
 
   try {
     const certification = await Certification.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!certification) return res.status(404).json({ message: 'Certification not found or unauthorized' });
-
-    let imageUrl = certification.image; // Garder l'image existante par défaut
-    if (req.files && req.files.image) {
-      const file = req.files.image;
-      if (file.size > 5 * 1024 * 1024) {
-        return res.status(400).json({ message: 'File size exceeds 5MB limit' });
-      }
-
-      const result = await cloudinary.uploader.upload(file.tempFilePath || file.path, {
-        folder: 'certifications',
-        public_id: `cert_${req.user._id}_${req.params.id}`, // Nom unique basé sur l'ID
-        overwrite: true,
-      });
-      imageUrl = result.secure_url;
+    if (!certification) {
+      return res.status(404).json({ message: 'Certification not found or unauthorized' });
     }
 
-    const updatedData = {
-      ...req.body,
-      image: imageUrl,
-    };
+    // Mise à jour des champs
+    certification.title = req.body.title;
+    certification.description = req.body.description;
+    certification.date = req.body.date;
+    if (req.file?.path) {
+      certification.image = req.file.path;
+    }
 
-    const updatedCertification = await Certification.findByIdAndUpdate(req.params.id, updatedData, { new: true });
-    res.status(200).json(updatedCertification);
+    await certification.save();
+    return res.status(200).json(certification);
   } catch (err) {
-    console.error('Error updating certification:', err.message);
-    res.status(500).json({ message: 'Failed to update certification', error: err.message });
+    return res.status(500).json({ message: 'Failed to update certification', error: err.message });
   }
 };
 
-// Supprimer une certification
+// ✅ DELETE - Supprimer une certification
 exports.deleteCertification = async (req, res) => {
   try {
-    const certification = await Certification.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!certification) return res.status(404).json({ message: 'Certification not found or unauthorized' });
+    const certification = await Certification.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user._id,
+    });
 
-    // Optionnel : Supprimer l'image de Cloudinary si elle existe
-    if (certification.image) {
-      const publicId = `certifications/cert_${req.user._id}_${req.params.id}`;
-      await cloudinary.uploader.destroy(publicId);
+    if (!certification) {
+      return res.status(404).json({ message: 'Certification not found or unauthorized' });
     }
 
-    await Certification.findByIdAndDelete(req.params.id);
-    res.status(200).json({ message: 'Certification deleted successfully' });
+    return res.status(200).json({ message: 'Certification deleted successfully' });
   } catch (err) {
-    console.error('Error deleting certification:', err.message);
-    res.status(500).json({ message: 'Failed to delete certification', error: err.message });
+    return res.status(500).json({ message: 'Failed to delete certification', error: err.message });
   }
 };

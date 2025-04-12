@@ -98,7 +98,116 @@ const Profile = () => {
     });
     const [categoryFilter, setCategoryFilter] = useState('all');
     const [levelFilter, setLevelFilter] = useState('all');
+    // État pour le quiz
+    const [currentQuiz, setCurrentQuiz] = useState(null);
+    const [isQuizLoading, setIsQuizLoading] = useState(false); // Nouvel état pour gérer le chargement
+    const [userAnswers, setUserAnswers] = useState({}); // Nouvel état pour les réponses de l'utilisateur
+    // Fonction pour générer un quiz
+    const generateQuiz = async (skillName) => {
+        if (isQuizLoading) {
+            toast.info('Veuillez attendre avant de générer un autre quiz.');
+            return;
+        }
 
+        setIsQuizLoading(true);
+        try {
+            const response = await fetch('https://opentdb.com/api.php?amount=20&category=18&type=multiple'); // Augmente à 20 pour avoir plus de choix
+            const data = await response.json();
+            console.log('Données brutes reçues:', data);
+
+            if (!response.ok || data.response_code !== 0 || !data.results.length) {
+                throw new Error('Aucune question trouvée dans la base de données');
+            }
+
+            // Filtrer les questions contenant le nom de la compétence (par exemple, "Java")
+            const filteredQuestions = data.results.filter(result =>
+                result.question.toLowerCase().includes(skillName.toLowerCase())
+            );
+
+            // Si pas assez de questions spécifiques, utiliser toutes les questions de la catégorie
+            const questionsToUse = filteredQuestions.length >= 10
+                ? filteredQuestions.slice(0, 10)
+                : data.results.slice(0, 10);
+
+            const questions = questionsToUse.map(q => ({
+                question: q.question,
+                options: {
+                    a: q.incorrect_answers[0],
+                    b: q.incorrect_answers[1],
+                    c: q.incorrect_answers[2],
+                    d: q.correct_answer,
+                },
+                correct_answer: 'd', // Bonne réponse à la dernière position
+            }));
+
+            if (questions.length < 10) {
+                console.warn('Moins de 10 questions pertinentes trouvées, utilisant des questions générales.');
+            }
+
+            setCurrentQuiz({
+                skill: skillName,
+                questions: questions,
+            });
+            setUserAnswers({}); // Réinitialiser les réponses
+            toast.success(`Quiz généré pour ${skillName} !`);
+        } catch (error) {
+            console.error('Erreur lors de la génération du quiz:', error);
+            toast.error(error.message || 'Échec de la génération du quiz');
+        } finally {
+            setTimeout(() => setIsQuizLoading(false), 2000);
+        }
+    };
+
+    // Fonction pour soumettre le quiz et mettre à jour les tags
+    const submitQuiz = async () => {
+        if (!currentQuiz) return;
+
+        let correctAnswers = 0;
+        currentQuiz.questions.forEach((question, index) => {
+            const userAnswer = userAnswers[index];
+            if (userAnswer === question.correct_answer) {
+                correctAnswers++;
+            }
+        });
+
+        toast.success(`Score : ${correctAnswers}/10`);
+
+        if (correctAnswers > 8) {
+            const skillToUpdate = skills.find(skill => skill.name === currentQuiz.skill);
+            if (skillToUpdate) {
+                const newTags = Math.min(100, skillToUpdate.tags + 20);
+                console.log('Mise à jour tags:', { skillId: skillToUpdate._id, oldTags: skillToUpdate.tags, newTags });
+                try {
+                    const response = await api.put(`/api/skills/update/${skillToUpdate._id}`, {
+                        tags: newTags,
+                        userId: skillToUpdate.userId, // Ajout conditionnel
+                    });
+                    setSkills(skills.map(skill =>
+                        skill._id === skillToUpdate._id ? response.data : skill
+                    ));
+                    toast.success(`Maîtrise de ${currentQuiz.skill} augmentée à ${newTags}% !`);
+                } catch (error) {
+                    console.error('Erreur lors de la mise à jour des tags:', {
+                        message: error.message,
+                        response: error.response?.data,
+                        status: error.response?.status,
+                        config: error.config,
+                    });
+                    toast.error('Échec de la mise à jour de la maîtrise: ' + (error.response?.data?.message || error.message));
+                }
+            }
+        }
+
+        setCurrentQuiz(null);
+    };
+
+    // Gestion des réponses de l'utilisateur
+    const handleAnswerChange = (questionIndex, answer) => {
+        setUserAnswers(prev => ({
+            ...prev,
+            [questionIndex]: answer,
+        }));
+    };
     // États pour les certifications
     const [certifications, setCertifications] = useState([]);
     const [showCertificationForm, setShowCertificationForm] = useState(false);
@@ -680,86 +789,86 @@ const Profile = () => {
 
 
     // Gestion de la sélection d'image
-   const handleCertificationImageSelect = (e, isEditing = false) => {
-  const file = e.target.files[0];
-  if (!file) return;
+    const handleCertificationImageSelect = (e, isEditing = false) => {
+        const file = e.target.files[0];
+        if (!file) return;
 
-  if (file.size > 5 * 1024 * 1024) {
-    toast.error('File size should be less than 5MB');
-    return;
-  }
+        if (file.size > 5 * 1024 * 1024) {
+            toast.error('File size should be less than 5MB');
+            return;
+        }
 
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    const imageData = event.target.result;
-    if (isEditing) {
-      setEditCertificationData((prev) => ({ ...prev, image: file }));
-    } else {
-      setNewCertification((prev) => ({ ...prev, image: file }));
-    }
-    setCertificationImagePreview(imageData);
-  };
-  reader.readAsDataURL(file);
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const imageData = event.target.result;
+            if (isEditing) {
+                setEditCertificationData((prev) => ({ ...prev, image: file }));
+            } else {
+                setNewCertification((prev) => ({ ...prev, image: file }));
+            }
+            setCertificationImagePreview(imageData);
+        };
+        reader.readAsDataURL(file);
 
-  console.log('Selected file:', file);
-};
+        console.log('Selected file:', file);
+    };
 
     // Ajouter une certification
     const handleAddCertification = async (e) => {
         e.preventDefault();
         setIsSaving(true);
         try {
-          const formData = new FormData();
-          formData.append('certifications_name', newCertification.certifications_name);
-          formData.append('issued_by', newCertification.issued_by);
-          formData.append('obtained_date', newCertification.obtained_date);
-          formData.append('description', newCertification.description || '');
-          if (newCertification.image instanceof File) {
-            formData.append('image', newCertification.image);
-          } else {
-            console.log('No valid file to upload:', newCertification.image);
-          }
-      
-          // Log détaillé du contenu de FormData
-          console.log('Contenu de FormData avant envoi:');
-          for (let [key, value] of formData.entries()) {
-            console.log(`${key}:`, value instanceof File ? `File { name: "${value.name}", size: ${value.size} }` : value);
-          }
-      
-          // Envoyer la requête avec Content-Type explicite
-          const response = await api.post('/api/certifications/add', formData, {
-            headers: {
-              'Content-Type': 'multipart/form-data', // Forcer le Content-Type
-            },
-            onUploadProgress: (progressEvent) => {
-              console.log('Progression de l\'upload:', progressEvent.loaded, '/', progressEvent.total);
-            },
-          });
-      
-          console.log('Réponse du serveur:', response.data);
-      
-          setCertifications([...certifications, response.data]);
-          setNewCertification({
-            certifications_name: '',
-            issued_by: '',
-            obtained_date: '',
-            description: '',
-            image: null,
-          });
-          setCertificationImagePreview(null);
-          setShowCertificationForm(false);
-          if (certificationFileInputRef.current) certificationFileInputRef.current.value = null;
-          toast.success('Certification added successfully');
+            const formData = new FormData();
+            formData.append('certifications_name', newCertification.certifications_name);
+            formData.append('issued_by', newCertification.issued_by);
+            formData.append('obtained_date', newCertification.obtained_date);
+            formData.append('description', newCertification.description || '');
+            if (newCertification.image instanceof File) {
+                formData.append('image', newCertification.image);
+            } else {
+                console.log('No valid file to upload:', newCertification.image);
+            }
+
+            // Log détaillé du contenu de FormData
+            console.log('Contenu de FormData avant envoi:');
+            for (let [key, value] of formData.entries()) {
+                console.log(`${key}:`, value instanceof File ? `File { name: "${value.name}", size: ${value.size} }` : value);
+            }
+
+            // Envoyer la requête avec Content-Type explicite
+            const response = await api.post('/api/certifications/add', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data', // Forcer le Content-Type
+                },
+                onUploadProgress: (progressEvent) => {
+                    console.log('Progression de l\'upload:', progressEvent.loaded, '/', progressEvent.total);
+                },
+            });
+
+            console.log('Réponse du serveur:', response.data);
+
+            setCertifications([...certifications, response.data]);
+            setNewCertification({
+                certifications_name: '',
+                issued_by: '',
+                obtained_date: '',
+                description: '',
+                image: null,
+            });
+            setCertificationImagePreview(null);
+            setShowCertificationForm(false);
+            if (certificationFileInputRef.current) certificationFileInputRef.current.value = null;
+            toast.success('Certification added successfully');
         } catch (error) {
-          console.error('Error adding certification:', error.response?.data || error.message);
-          if (error.request) {
-            console.log('Requête envoyée:', error.request);
-          }
-          toast.error(error.response?.data?.message || 'Failed to add certification');
+            console.error('Error adding certification:', error.response?.data || error.message);
+            if (error.request) {
+                console.log('Requête envoyée:', error.request);
+            }
+            toast.error(error.response?.data?.message || 'Failed to add certification');
         } finally {
-          setIsSaving(false);
+            setIsSaving(false);
         }
-      };
+    };
     // Mettre à jour une certification
     const handleUpdateCertification = async (e) => {
         e.preventDefault();
@@ -1798,6 +1907,26 @@ const Profile = () => {
                                                                                     />
                                                                                 </svg>
                                                                             </button>
+                                                                            <button
+                                                                                onClick={() => generateQuiz(skill.name)}
+                                                                                className="btn btn-square btn-xs btn-ghost"
+                                                                                title="Générer un quiz"
+                                                                            >
+                                                                                <svg
+                                                                                    xmlns="http://www.w3.org/2000/svg"
+                                                                                    className="h-4 w-4"
+                                                                                    fill="none"
+                                                                                    viewBox="0 0 24 24"
+                                                                                    stroke="currentColor"
+                                                                                >
+                                                                                    <path
+                                                                                        strokeLinecap="round"
+                                                                                        strokeLinejoin="round"
+                                                                                        strokeWidth={2}
+                                                                                        d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                                                                                    />
+                                                                                </svg>
+                                                                            </button>
                                                                         </div>
                                                                     </div>
                                                                 </div>
@@ -1807,14 +1936,53 @@ const Profile = () => {
                                                 })}
                                         </div>
                                     )}
+                                    {currentQuiz && (
+                                        <div className="mt-8 p-6 bg-base-100 rounded-lg border border-base-300">
+                                            <h2 className="text-2xl font-bold mb-4">Quiz pour {currentQuiz.skill}</h2>
+                                            {currentQuiz.questions.map((question, index) => (
+                                                <div key={index} className="mb-4">
+                                                    <p className="font-medium">{index + 1}. {question.question}</p>
+                                                    {Object.entries(question.options).map(([key, value]) => (
+                                                        <div key={key} className="ml-4">
+                                                            <label className="flex items-center space-x-2">
+                                                                <input
+                                                                    type="radio"
+                                                                    name={`question-${index}`}
+                                                                    value={key}
+                                                                    onChange={() => handleAnswerChange(index, key)}
+                                                                    className="radio radio-primary"
+                                                                />
+                                                                <span className="text-sm text-base-content/80">
+                                                                    {key.toUpperCase()}. {value}
+                                                                </span>
+                                                            </label>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ))}
+                                            <button
+                                                onClick={submitQuiz}
+                                                className="btn btn-primary mt-4"
+                                                disabled={Object.keys(userAnswers).length !== currentQuiz.questions.length}
+                                            >
+                                                Soumettre le quiz
+                                            </button>
+                                            <button
+                                                onClick={() => setCurrentQuiz(null)}
+                                                className="btn btn-ghost ml-2 mt-4"
+                                            >
+                                                Fermer le quiz
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
+
                             )}
                             {activeTab === 'Certifications' && (
                                 <div className="mt-4 p-6 bg-base-100 text-base-content rounded-lg border border-base-300 shadow-lg">
                                     <div className="flex justify-between items-center mb-6">
-                                        <h2 className="text-2xl font-bold text-primary">Mes Certifications</h2>
+                                        <h2 className="text-2xl font-bold text-primary">My Certifications</h2>
                                         <div className="flex items-center gap-4">
-                                            {/* Ajout du sélecteur de tri */}
                                             <div className="form-control">
                                                 <label className="label">
                                                     <span className="label-text">Sort by</span>
@@ -1868,7 +2036,7 @@ const Profile = () => {
                                     {showCertificationForm && (
                                         <div className="bg-base-200 p-6 rounded-lg mb-8 shadow-sm">
                                             <h3 className="text-lg font-semibold mb-4">
-                                                {editingCertificationId ? 'Modifier la Certification' : 'Nouvelle Certification'}
+                                                {editingCertificationId ? 'Edit Certification' : 'New Certification'}
                                             </h3>
                                             <form
                                                 onSubmit={editingCertificationId ? handleUpdateCertification : handleAddCertification}
@@ -1877,7 +2045,7 @@ const Profile = () => {
                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div className="form-control">
                                                         <label className="label">
-                                                            <span className="label-text">Name*</span>
+                                                            <span className="label-text">Name *</span>
                                                         </label>
                                                         <input
                                                             type="text"
@@ -1894,7 +2062,7 @@ const Profile = () => {
                                                     </div>
                                                     <div className="form-control">
                                                         <label className="label">
-                                                            <span className="label-text">Issued by                                *</span>
+                                                            <span className="label-text">Issued by *</span>
                                                         </label>
                                                         <input
                                                             type="text"
@@ -1913,7 +2081,7 @@ const Profile = () => {
                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div className="form-control">
                                                         <label className="label">
-                                                            <span className="label-text">Date obtained  *</span>
+                                                            <span className="label-text">Date obtained *</span>
                                                         </label>
                                                         <input
                                                             type="date"
@@ -1941,7 +2109,7 @@ const Profile = () => {
                                                                 : setNewCertification(prev => ({ ...prev, description: e.target.value }))
                                                         }
                                                         className="textarea textarea-bordered h-24"
-                                                        placeholder="Décrivez cette certification..."
+                                                        placeholder="Describe this certification..."
                                                     />
                                                 </div>
                                                 <div className="form-control">
@@ -1959,10 +2127,10 @@ const Profile = () => {
                                                 {certificationImagePreview && (
                                                     <div className="mt-4">
                                                         <label className="label">
-                                                            <span className="label-text">Aperçu</span>
+                                                            <span className="label-text">Preview</span>
                                                         </label>
                                                         <div className="w-40 h-40 border-2 border-base-300 rounded-lg overflow-hidden bg-base-200 flex items-center justify-center">
-                                                            <img src={certificationImagePreview} alt="Aperçu" className="w-full h-full object-contain" />
+                                                            <img src={certificationImagePreview} alt="Preview" className="w-full h-full object-contain" />
                                                         </div>
                                                         <div className="mt-2 flex justify-center">
                                                             <button
@@ -1975,6 +2143,7 @@ const Profile = () => {
                                                         </div>
                                                     </div>
                                                 )}
+
                                                 <div className="flex justify-end gap-3 mt-6">
                                                     <button
                                                         type="button"
@@ -2023,7 +2192,7 @@ const Profile = () => {
                                                         <div className="flex justify-between items-start gap-4">
                                                             <div className="flex-1">
                                                                 <h3 className="text-lg font-semibold">
-                                                                    {certification.certifications_name || 'Sans nom'}
+                                                                    {certification.certifications_name || 'No name'}
                                                                 </h3>
                                                                 {certification.description && (
                                                                     <p className="mt-2 text-base-content/80 line-clamp-2">
@@ -2031,27 +2200,23 @@ const Profile = () => {
                                                                     </p>
                                                                 )}
                                                                 <p className="text-sm text-base-content/70 mt-1">
-                                                                    Issued by  * : {certification.issued_by || 'Inconnu'}
+                                                                    Issued by: {certification.issued_by || 'Unknown'}
                                                                 </p>
-                                                                <p>Obtained on *: {new Date(certification.obtained_date).toLocaleDateString('fr-FR')}</p>
+                                                                <p>Obtained on: {new Date(certification.obtained_date).toLocaleDateString('en-US')}</p>
                                                             </div>
                                                             {certification.image ? (
                                                                 <div className="w-20 h-20 border border-base-300 rounded-lg overflow-hidden bg-base-200">
                                                                     <img
-                                                                        src={certification.image.startsWith('data:') ? certification.image : `/uploads/${certification.image}`}
+                                                                        src={certification.image}
                                                                         alt={certification.certifications_name}
                                                                         className="w-full h-full object-cover"
-                                                                       
                                                                     />
                                                                 </div>
-                                                            ) :( <div className="w-20 h-20 border border-base-300 rounded-lg overflow-hidden bg-base-200">
-                                                            <img
-                                                                src=''
-                                                                alt="no image found"
-                                                                className="w-full h-full object-cover"
-                                                               
-                                                            />
-                                                        </div>)}
+                                                            ) : (
+                                                                <div className="w-20 h-20 border border-base-300 rounded-lg overflow-hidden bg-base-200 flex items-center justify-center">
+                                                                    <span className="text-base-content/50">No image</span>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                         <div className="flex justify-end mt-4 gap-2">
                                                             {!certification.image && (
@@ -2073,7 +2238,7 @@ const Profile = () => {
                                                             <button
                                                                 onClick={() => handleEditCertification(certification)}
                                                                 className="btn btn-square btn-xs btn-ghost hover:bg-base-300 transition-colors"
-                                                                title="Modifier"
+                                                                title="Edit"
                                                             >
                                                                 <svg
                                                                     xmlns="http://www.w3.org/2000/svg"
@@ -2093,7 +2258,7 @@ const Profile = () => {
                                                             <button
                                                                 onClick={() => handleDeleteCertification(certification._id)}
                                                                 className="btn btn-square btn-xs btn-ghost text-error hover:bg-error/20 transition-colors"
-                                                                title="Supprimer"
+                                                                title="Delete"
                                                             >
                                                                 <svg
                                                                     xmlns="http://www.w3.org/2000/svg"
@@ -2113,12 +2278,10 @@ const Profile = () => {
                                                         </div>
                                                     </div>
                                                 ))}
-
                                         </div>
                                     )}
                                 </div>
                             )}
-
                             {activeTab === 'Experience' && (
                                 <div className="mt-4 p-6 bg-base-100 rounded-lg border border-base-300">
                                     <div className="flex justify-between items-center mb-4">
@@ -2870,8 +3033,6 @@ const Profile = () => {
                                     </div>
                                 </div>
                             )}
-
-
                         </div>
                     </div>
                 </div>
